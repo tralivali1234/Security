@@ -4,29 +4,24 @@
 using System;
 using System.Collections.Generic;
 using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.OAuth.Claims;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Http.Authentication;
+using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Protocols;
 using Microsoft.IdentityModel.Protocols.OpenIdConnect;
 using Microsoft.IdentityModel.Tokens;
 
-namespace Microsoft.AspNetCore.Builder
+namespace Microsoft.AspNetCore.Authentication.OpenIdConnect
 {
     /// <summary>
-    /// Configuration options for <see cref="OpenIdConnectMiddleware"/>
+    /// Configuration options for <see cref="OpenIdConnectHandler"/>
     /// </summary>
     public class OpenIdConnectOptions : RemoteAuthenticationOptions
     {
-        /// <summary>
-        /// Initializes a new <see cref="OpenIdConnectOptions"/>
-        /// </summary>
-        public OpenIdConnectOptions()
-            : this(OpenIdConnectDefaults.AuthenticationScheme)
-        {
-        }
-
         /// <summary>
         /// Initializes a new <see cref="OpenIdConnectOptions"/>
         /// </summary>
@@ -42,11 +37,8 @@ namespace Microsoft.AspNetCore.Builder
         /// <para>TokenValidationParameters: new <see cref="TokenValidationParameters"/> with AuthenticationScheme = authenticationScheme.</para>
         /// <para>UseTokenLifetime: false.</para>
         /// </remarks>
-        /// <param name="authenticationScheme"> will be used to when creating the <see cref="System.Security.Claims.ClaimsIdentity"/> for the AuthenticationScheme property.</param>
-        public OpenIdConnectOptions(string authenticationScheme)
+        public OpenIdConnectOptions()
         {
-            AuthenticationScheme = authenticationScheme;
-            AutomaticChallenge = true;
             DisplayName = OpenIdConnectDefaults.Caption;
             CallbackPath = new PathString("/signin-oidc");
             SignedOutCallbackPath = new PathString("/signout-callback-oidc");
@@ -55,6 +47,54 @@ namespace Microsoft.AspNetCore.Builder
             Events = new OpenIdConnectEvents();
             Scope.Add("openid");
             Scope.Add("profile");
+
+            ClaimActions.DeleteClaim("nonce");
+            ClaimActions.DeleteClaim("aud");
+            ClaimActions.DeleteClaim("azp");
+            ClaimActions.DeleteClaim("acr");
+            ClaimActions.DeleteClaim("amr");
+            ClaimActions.DeleteClaim("iss");
+            ClaimActions.DeleteClaim("iat");
+            ClaimActions.DeleteClaim("nbf");
+            ClaimActions.DeleteClaim("exp");
+            ClaimActions.DeleteClaim("at_hash");
+            ClaimActions.DeleteClaim("c_hash");
+            ClaimActions.DeleteClaim("auth_time");
+            ClaimActions.DeleteClaim("ipaddr");
+            ClaimActions.DeleteClaim("platf");
+            ClaimActions.DeleteClaim("ver");
+
+            // http://openid.net/specs/openid-connect-core-1_0.html#StandardClaims
+            ClaimActions.MapUniqueJsonKey("sub", "sub");
+            ClaimActions.MapUniqueJsonKey("name", "name");
+            ClaimActions.MapUniqueJsonKey("given_name", "given_name");
+            ClaimActions.MapUniqueJsonKey("family_name", "family_name");
+            ClaimActions.MapUniqueJsonKey("profile", "profile");
+            ClaimActions.MapUniqueJsonKey("email", "email");
+        }
+
+        /// <summary>
+        /// Check that the options are valid.  Should throw an exception if things are not ok.
+        /// </summary>
+        public override void Validate()
+        {
+            base.Validate();
+
+            if (string.IsNullOrEmpty(ClientId))
+            {
+                throw new ArgumentException("Options.ClientId must be provided", nameof(ClientId));
+            }
+
+            if (!CallbackPath.HasValue)
+            {
+                throw new ArgumentException("Options.CallbackPath must be provided.", nameof(CallbackPath));
+            }
+
+            if (ConfigurationManager == null)
+            {
+                throw new InvalidOperationException($"Provide {nameof(Authority)}, {nameof(MetadataAddress)}, "
+                + $"{nameof(Configuration)}, or {nameof(ConfigurationManager)} to {nameof(OpenIdConnectOptions)}");
+            }
         }
 
         /// <summary>
@@ -85,10 +125,15 @@ namespace Microsoft.AspNetCore.Builder
         public IConfigurationManager<OpenIdConnectConfiguration> ConfigurationManager { get; set; }
 
         /// <summary>
-        /// Boolean to set whether the middleware should go to user info endpoint to retrieve additional claims or not after creating an identity from id_token received from token endpoint.
+        /// Boolean to set whether the handler should go to user info endpoint to retrieve additional claims or not after creating an identity from id_token received from token endpoint.
         /// The default is 'false'.
         /// </summary>
         public bool GetClaimsFromUserInfoEndpoint { get; set; }
+
+        /// <summary>
+        /// A collection of claim actions used to select values from the json user data and create Claims.
+        /// </summary>
+        public ClaimActionCollection ClaimActions { get; } = new ClaimActionCollection();
 
         /// <summary>
         /// Gets or sets if HTTPS is required for the metadata address or authority.
@@ -102,17 +147,17 @@ namespace Microsoft.AspNetCore.Builder
         public string MetadataAddress { get; set; }
 
         /// <summary>
-        /// Gets or sets the <see cref="IOpenIdConnectEvents"/> to notify when processing OpenIdConnect messages.
+        /// Gets or sets the <see cref="OpenIdConnectEvents"/> to notify when processing OpenIdConnect messages.
         /// </summary>
-        public new IOpenIdConnectEvents Events
+        public new OpenIdConnectEvents Events
         {
-            get { return (IOpenIdConnectEvents)base.Events; }
+            get { return (OpenIdConnectEvents)base.Events; }
             set { base.Events = value; }
         }
 
         /// <summary>
         /// Gets or sets the <see cref="OpenIdConnectProtocolValidator"/> that is used to ensure that the 'id_token' received
-        /// is valid per: http://openid.net/specs/openid-connect-core-1_0.html#IDTokenValidation 
+        /// is valid per: http://openid.net/specs/openid-connect-core-1_0.html#IDTokenValidation
         /// </summary>
         /// <exception cref="ArgumentNullException">if 'value' is null.</exception>
         public OpenIdConnectProtocolValidator ProtocolValidator { get; set; } = new OpenIdConnectProtocolValidator()
@@ -165,7 +210,7 @@ namespace Microsoft.AspNetCore.Builder
         public ICollection<string> Scope { get; } = new HashSet<string>();
 
         /// <summary>
-        /// Requests received on this path will cause the middleware to invoke SignOut using the SignInScheme.
+        /// Requests received on this path will cause the handler to invoke SignOut using the SignInScheme.
         /// </summary>
         public PathString RemoteSignOutPath { get; set; }
 
@@ -176,12 +221,12 @@ namespace Microsoft.AspNetCore.Builder
         public string SignOutScheme { get; set; }
 
         /// <summary>
-        /// Gets or sets the type used to secure data handled by the middleware.
+        /// Gets or sets the type used to secure data handled by the handler.
         /// </summary>
         public ISecureDataFormat<AuthenticationProperties> StateDataFormat { get; set; }
 
         /// <summary>
-        /// Gets or sets the type used to secure strings used by the middleware.
+        /// Gets or sets the type used to secure strings used by the handler.
         /// </summary>
         public ISecureDataFormat<string> StringDataFormat { get; set; }
 
@@ -204,11 +249,18 @@ namespace Microsoft.AspNetCore.Builder
         public bool UseTokenLifetime { get; set; }
 
         /// <summary>
-        /// Indicates if requests to the CallbackPath may also be for other components. If enabled the middleware will pass
+        /// Indicates if requests to the CallbackPath may also be for other components. If enabled the handler will pass
         /// requests through that do not contain OpenIdConnect authentication responses. Disabling this and setting the
         /// CallbackPath to a dedicated endpoint may provide better error handling.
         /// This is disabled by default.
         /// </summary>
         public bool SkipUnrecognizedRequests { get; set; } = false;
+
+        /// <summary>
+        /// Indicates whether telemetry should be disabled. When this feature is enabled,
+        /// the assembly version of the Microsoft IdentityModel packages is sent to the
+        /// remote OpenID Connect provider as an authorization/logout request parameter.
+        /// </summary>
+        public bool DisableTelemetry { get; set; }
     }
 }

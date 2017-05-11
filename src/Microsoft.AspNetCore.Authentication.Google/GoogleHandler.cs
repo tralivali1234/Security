@@ -6,21 +6,22 @@ using System.Collections.Generic;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Security.Claims;
+using System.Text.Encodings.Web;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authentication.OAuth;
-using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Http.Authentication;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.WebUtilities;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Newtonsoft.Json.Linq;
 
 namespace Microsoft.AspNetCore.Authentication.Google
 {
     internal class GoogleHandler : OAuthHandler<GoogleOptions>
     {
-        public GoogleHandler(HttpClient httpClient)
-            : base(httpClient)
-        {
-        }
+        public GoogleHandler(IOptions<AuthenticationOptions> sharedOptions, IOptionsSnapshot<GoogleOptions> options, ILoggerFactory logger, UrlEncoder encoder, IDataProtectionProvider dataProtection, ISystemClock clock)
+            : base(sharedOptions, options, logger, encoder, dataProtection, clock)
+        { }
 
         protected override async Task<AuthenticationTicket> CreateTicketAsync(
             ClaimsIdentity identity,
@@ -40,46 +41,11 @@ namespace Microsoft.AspNetCore.Authentication.Google
             var payload = JObject.Parse(await response.Content.ReadAsStringAsync());
 
             var principal = new ClaimsPrincipal(identity);
-            var ticket = new AuthenticationTicket(principal, properties, Options.AuthenticationScheme);
-            var context = new OAuthCreatingTicketContext(ticket, Context, Options, Backchannel, tokens, payload);
+            var ticket = new AuthenticationTicket(principal, properties, Scheme.Name);
+            var context = new OAuthCreatingTicketContext(ticket, Context, Scheme, Options, Backchannel, tokens, payload);
+            context.RunClaimActions();
 
-            var identifier = GoogleHelper.GetId(payload);
-            if (!string.IsNullOrEmpty(identifier))
-            {
-                identity.AddClaim(new Claim(ClaimTypes.NameIdentifier, identifier, ClaimValueTypes.String, Options.ClaimsIssuer));
-            }
-
-            var givenName = GoogleHelper.GetGivenName(payload);
-            if (!string.IsNullOrEmpty(givenName))
-            {
-                identity.AddClaim(new Claim(ClaimTypes.GivenName, givenName, ClaimValueTypes.String, Options.ClaimsIssuer));
-            }
-
-            var familyName = GoogleHelper.GetFamilyName(payload);
-            if (!string.IsNullOrEmpty(familyName))
-            {
-                identity.AddClaim(new Claim(ClaimTypes.Surname, familyName, ClaimValueTypes.String, Options.ClaimsIssuer));
-            }
-
-            var name = GoogleHelper.GetName(payload);
-            if (!string.IsNullOrEmpty(name))
-            {
-                identity.AddClaim(new Claim(ClaimTypes.Name, name, ClaimValueTypes.String, Options.ClaimsIssuer));
-            }
-
-            var email = GoogleHelper.GetEmail(payload);
-            if (!string.IsNullOrEmpty(email))
-            {
-                identity.AddClaim(new Claim(ClaimTypes.Email, email, ClaimValueTypes.String, Options.ClaimsIssuer));
-            }
-
-            var profile = GoogleHelper.GetProfile(payload);
-            if (!string.IsNullOrEmpty(profile))
-            {
-                identity.AddClaim(new Claim("urn:google:profile", profile, ClaimValueTypes.String, Options.ClaimsIssuer));
-            }
-
-            await Options.Events.CreatingTicket(context);
+            await Events.CreatingTicket(context);
 
             return context.Ticket;
         }
